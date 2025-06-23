@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup-container">
+    <!-- Header -->
+    <div class="header">
+      <span class="icon">🎓</span>
+      <h1>ClassLogger</h1>
+    </div>
+
+    <!-- Tabs -->
+    <div class="popup-tabs">
+      <button class="popup-tab-btn active" data-tab="status">Status</button>
+      <button class="popup-tab-btn" data-tab="login">Login</button>
+      <button class="popup-tab-btn" data-tab="help">Help</button>
+    </div>
+
+    <!-- Status Tab -->
+    <div id="status-tab" class="popup-tab-content active">
+      <div id="dashboard" style="display: none;">
+        <div class="user-info">
+          <div class="user-name" id="user-name">Teacher Name</div>
+          <div class="user-email" id="user-email">teacher@example.com</div>
+          <div class="user-status" id="user-status">✅ Token Active</div>
+        </div>
+
+        <div class="status-grid">
+          <div class="status-card">
+            <span class="status-icon">🔑</span>
+            <div class="status-text" id="token-expiry">Token expires in X days</div>
+          </div>
+          <div class="status-card">
+            <span class="status-icon">📊</span>
+            <div class="status-text" id="token-usage">Used X times</div>
+          </div>
+          <div class="status-card">
+            <span class="status-icon">🔗</span>
+            <div class="status-text">Extension Active</div>
+          </div>
+          <div class="status-card">
+            <span class="status-icon">📹</span>
+            <div class="status-text">Monitoring Google Meet</div>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button id="refresh-btn" class="btn btn-secondary">🔄 Refresh</button>
+          <button id="clear-token-btn" class="btn btn-outline">🚪 Logout</button>
+        </div>
+      </div>
+
+      <div id="logged-out-status" style="display: block;">
+        <div style="text-align: center; padding: 40px 20px;">
+          <div style="font-size: 48px; margin-bottom: 16px;">🔐</div>
+          <h3 style="color: #374151; margin-bottom: 8px;">Not Logged In</h3>
+          <p style="color: #6b7280; font-size: 14px; margin-bottom: 20px;">Please login to use ClassLogger</p>
+          <button id="login-now-btn" class="btn btn-primary">Login Now</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Login Tab -->
+    <div id="login-tab" class="popup-tab-content">
+      <div id="token-form" class="login-content">
+        <p class="welcome-text">Enter your weekly extension token</p>
+        
+        <form id="token-input-form">
+          <div class="form-group">
+            <label for="extension-token">Extension Token:</label>
+            <input 
+              type="text" 
+              id="extension-token" 
+              required 
+              placeholder="CL_abc123_202425_def456"
+              pattern="^CL_[a-f0-9]{8}_\d{6}_[a-f0-9]{8}$"
+              title="Enter your ClassLogger extension token"
+            >
+          </div>
+          
+          <button type="submit" class="btn btn-primary">
+            🔐 Validate Token
+          </button>
+        </form>
+        
+        <div id="token-error" class="error" style="display: none;"></div>
+      </div>
+    </div>
+
+    <!-- Help Tab -->
+    <div id="help-tab" class="popup-tab-content">
+      <div class="help-content">
+        <h3>How to get your token:</h3>
+        <ol>
+          <li>Login to your ClassLogger dashboard</li>
+          <li>Go to "Extension Setup" section</li>
+          <li>Click "Generate Weekly Token"</li>
+          <li>Copy and paste the token here</li>
+        </ol>
+
+        <h3>How to use:</h3>
+        <ul>
+          <li>Join a Google Meet using your class URL</li>
+          <li>Look for the ClassLogger widget</li>
+          <li>Click "Start Class" to begin logging</li>
+          <li>Add notes during the class</li>
+          <li>Click "End Class" when finished</li>
+        </ul>
+
+        <div class="note">
+          🔒 Tokens expire weekly for security. Generate a new token when needed.
+        </div>
+
+        <h3 style="margin-top: 20px;">Features:</h3>
+        <ul>
+          <li><strong>Auto-detection:</strong> Participant tracking, screen sharing detection</li>
+          <li><strong>Manual Notes:</strong> Add class descriptions, topics, homework</li>
+          <li><strong>Smart Summaries:</strong> Enhanced class logs with rich content</li>
+          <li><strong>Real-time Monitoring:</strong> Track class activity as it happens</li>
+        </ul>
+
+        <div class="note" style="background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%); color: #065f46; border-left-color: #42d88e;">
+          💡 Need help? Check your ClassLogger dashboard for more support options.
+        </div>
+      </div>
+    </div>
+
+    <!-- Loading State -->
+    <div id="loading" class="loading" style="display: none;">
+      <div class="spinner"></div>
+      <p id="loading-text">Validating token...</p>
+    </div>
+  </div>
+  
+  <script src="popup.js"></script>
+</body>
+</html>
