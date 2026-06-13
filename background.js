@@ -4,7 +4,7 @@
 console.log('🎓 ClassLogger Background: Service worker starting...');
 
 // Configuration
-const API_BASE_URL = 'http://localhost:3000';
+const API_BASE_URL = 'https://classlogger.com';
 
 // Message handler
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -17,7 +17,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
     
     // Handle auth status check (for content script)
-    if (request.action === 'getAuthStatus') {
+    if (request.action === 'checkAuthStatus') {
         handleAuthStatus(sendResponse);
         return true;
     }
@@ -46,16 +46,146 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         handleTakeScreenshot(sendResponse);
         return true;
     }
-    
+
+    // Handle available tabs request (for screenshot tab selection)
+    if (request.action === 'getAvailableTabs') {
+        console.log('🗂️ getAvailableTabs request');
+        handleGetAvailableTabs(sendResponse);
+        return true;
+    }
+
+    // Handle save screenshot — persist to Supabase via the website API
+    if (request.action === 'saveScreenshot') {
+        console.log('💾 saveScreenshot request');
+        handleSaveScreenshot(request, sendResponse);
+        return true;
+    }
+
+    // Handle save resource (image/file upload or link)
+    if (request.action === 'saveResource') {
+        console.log('📎 saveResource request');
+        handleSaveResource(request, sendResponse);
+        return true;
+    }
+
     // Handle logout
     if (request.action === 'logout') {
         handleLogout(sendResponse);
         return true;
     }
-    
+
     console.log('❓ Unknown action:', request.action);
     sendResponse({ success: false, error: 'Unknown action' });
 });
+
+// Persist a captured screenshot to the class record in Supabase
+async function handleSaveScreenshot(request, sendResponse) {
+    try {
+        const token = await getValidToken();
+        if (!token) {
+            sendResponse({ success: false, error: 'Not authenticated' });
+            return;
+        }
+
+        const resp = await fetch(`${API_BASE_URL}/api/extension/screenshot`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify({
+                class_log_id: request.class_log_id,
+                screenshot_data: request.screenshot_data,
+                screenshot_type: request.screenshot_type || 'manual',
+                timestamp: request.timestamp
+            })
+        });
+
+        const data = await parseResponseSafe(resp);
+        if (!resp.ok || !data.success) {
+            console.warn('⚠️ saveScreenshot API error:', data.error);
+            sendResponse({ success: false, error: data.error || `API error ${resp.status}` });
+            return;
+        }
+
+        console.log('✅ Screenshot saved to class:', data.screenshot_url || data.screenshot_id);
+        sendResponse({ success: true, screenshot_id: data.screenshot_id, screenshot_url: data.screenshot_url });
+    } catch (error) {
+        console.warn('⚠️ handleSaveScreenshot failed:', error.message);
+        sendResponse({ success: false, error: error.message });
+    }
+}
+
+// Safely parse a fetch Response — returns parsed JSON, or a {success:false,error}
+// object derived from the text body (handles 413 "Request Entity Too Large" etc.)
+async function parseResponseSafe(resp) {
+    const text = await resp.text();
+    try {
+        return JSON.parse(text);
+    } catch {
+        let error = text?.slice(0, 120) || `HTTP ${resp.status}`;
+        if (resp.status === 413 || /request entity too large/i.test(text)) {
+            error = 'Screenshot too large to upload';
+        }
+        return { success: false, error };
+    }
+}
+
+// Persist a resource (uploaded image/file or a link) to the class record
+async function handleSaveResource(request, sendResponse) {
+    try {
+        const token = await getValidToken();
+        if (!token) {
+            sendResponse({ success: false, error: 'Not authenticated' });
+            return;
+        }
+
+        const resp = await fetch(`${API_BASE_URL}/api/extension/save-resource`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify({
+                class_log_id: request.class_log_id,
+                type: request.type,           // 'link' or 'file'
+                file_data: request.file_data, // base64 for files
+                url: request.url,             // for links
+                name: request.name
+            })
+        });
+
+        const data = await parseResponseSafe(resp);
+        if (!resp.ok || !data.success) {
+            sendResponse({ success: false, error: data.error || `API error ${resp.status}` });
+            return;
+        }
+        sendResponse({ success: true, resource: data.resource });
+    } catch (error) {
+        console.warn('⚠️ handleSaveResource failed:', error.message);
+        sendResponse({ success: false, error: error.message });
+    }
+}
+
+// Return the list of open tabs that can be captured
+async function handleGetAvailableTabs(sendResponse) {
+    try {
+        const tabs = await chrome.tabs.query({});
+        const available = tabs
+            .filter(t => t.url && (t.url.startsWith('http://') || t.url.startsWith('https://')))
+            .map(t => ({
+                id: t.id,
+                title: t.title || 'Untitled',
+                url: t.url,
+                favIconUrl: t.favIconUrl || null,
+                active: t.active
+            }));
+        sendResponse({ success: true, tabs: available });
+    } catch (error) {
+        console.error('❌ getAvailableTabs failed:', error);
+        sendResponse({ success: false, error: error.message, tabs: [] });
+    }
+}
 
 async function handleValidateToken(token, sendResponse) {
     try {
@@ -119,75 +249,86 @@ async function handleValidateToken(token, sendResponse) {
         sendResponse({ 
             valid: false, 
             success: false, 
-            error: 'Connection failed - Make sure your ClassLogger API is running on localhost:3000'
+            error: 'Connection failed - Make sure you are logged in at classlogger.com'
         });
     }
+}
+
+// Fetch a fresh extension JWT using the logged-in classlogger.com cookie session.
+// This is what enables auto-detection of the website login — no manual token needed.
+async function getExtensionToken() {
+    try {
+        console.log('🔑 Requesting extension token via cookie session...');
+        const resp = await fetch(`${API_BASE_URL}/api/extension/issue-temp-token`, {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' }
+        });
+
+        if (!resp.ok) {
+            console.log('⚠️ issue-temp-token returned', resp.status);
+            return { success: false, error: `Not logged in at classlogger.com (${resp.status})` };
+        }
+
+        const data = await resp.json();
+        if (data.success && data.token) {
+            // NOTE: Do NOT write to chrome.storage here — the content script's
+            // storage.onChanged listener would fire on every call and trigger an
+            // infinite reinitialize loop. Tokens are fetched fresh on demand.
+            console.log('✅ Extension token obtained for:', data.user?.email);
+            return { success: true, token: data.token, user: data.user };
+        }
+
+        return { success: false, error: data.error || 'No token returned' };
+    } catch (e) {
+        console.error('❌ getExtensionToken failed:', e);
+        return { success: false, error: e.message };
+    }
+}
+
+// Get a valid extension token: try the cookie session first (auto-detect),
+// fall back to any cached token.
+async function getValidToken() {
+    const fresh = await getExtensionToken();
+    if (fresh.success) return fresh.token;
+
+    const result = await chrome.storage.local.get(['classlogger_token']);
+    return result.classlogger_token || null;
 }
 
 async function handleAuthStatus(sendResponse) {
     try {
         console.log('🔐 Checking auth status for content script...');
-        
-        // Get stored token
-        const result = await chrome.storage.local.get(['classlogger_token']);
-        const token = result.classlogger_token;
-        
-        console.log('🎫 Token found:', token ? 'YES (' + token.substring(0, 20) + '...)' : 'NO');
-        
-        if (!token) {
-            console.log('❌ No token found');
-            sendResponse({ success: false, loggedIn: false, error: 'No token found' });
-            return;
-        }
-        
-        console.log('📡 Calling /api/teacher/tokens/validate for auth status...');
-        const authResponse = await fetch(`${API_BASE_URL}/api/teacher/tokens/validate`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ token })
-        });
-        
-        console.log('📥 Auth API response status:', authResponse.status);
-        
-        if (!authResponse.ok) {
-            sendResponse({ 
-                success: false, 
-                loggedIn: false, 
-                error: `API error: ${authResponse.status} ${authResponse.statusText}` 
+
+        // Auto-detect: ask classlogger.com for a token using the session cookie
+        const tokenResult = await getExtensionToken();
+
+        if (tokenResult.success && tokenResult.user) {
+            console.log('✅ Auto-detected website login for:', tokenResult.user.email);
+            sendResponse({
+                success: true,
+                loggedIn: true,
+                teacherId: tokenResult.user.id,
+                teacherName: tokenResult.user.name,
+                teacherEmail: tokenResult.user.email,
+                loginMethod: 'Session'
             });
             return;
         }
 
-        const authData = await authResponse.json();
-        console.log('📥 Auth API response data:', authData);
-        
-        if (authData.success && authData.teacher) {
-            // Convert to the format content script expects
-            sendResponse({
-                success: true,
-                loggedIn: true,
-                teacherId: authData.teacher.id,
-                teacherName: authData.teacher.name,
-                teacherEmail: authData.teacher.email,
-                loginMethod: 'Token'
-            });
-        } else {
-            console.log('❌ Auth failed:', authData.error);
-            sendResponse({ 
-                success: false, 
-                loggedIn: false, 
-                error: authData.error || 'Invalid token' 
-            });
-        }
-        
+        console.log('❌ No active website session:', tokenResult.error);
+        sendResponse({
+            success: false,
+            loggedIn: false,
+            error: tokenResult.error || 'Please log in at classlogger.com'
+        });
+
     } catch (error) {
         console.error('❌ Auth status error:', error);
-        sendResponse({ 
-            success: false, 
-            loggedIn: false, 
-            error: 'Connection failed - Make sure your ClassLogger API is running'
+        sendResponse({
+            success: false,
+            loggedIn: false,
+            error: 'Connection failed - please log in at classlogger.com'
         });
     }
 }
@@ -195,50 +336,19 @@ async function handleAuthStatus(sendResponse) {
 async function handleCheckMeetUrl(meetUrl, sendResponse) {
     try {
         console.log('🔍 handleCheckMeetUrl called with meetUrl:', meetUrl);
-        
-        const result = await chrome.storage.local.get(['classlogger_token']);
-        const token = result.classlogger_token;
-        
-        console.log('🎫 Token for meet URL check:', token ? token.substring(0, 20) + '...' : 'NO TOKEN');
-        
-        if (!token) {
-            console.error('❌ No token found');
-            sendResponse({ success: false, error: 'Not authenticated' });
-            return;
-        }
-        
-        // First get teacher ID from the auth status endpoint
-        console.log('🔐 Getting teacher ID from auth status...');
-        const teacherResponse = await fetch(`${API_BASE_URL}/api/teacher/tokens/validate`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ token })
-        });
-        
-        console.log('📥 Teacher response status:', teacherResponse.status);
-        
-        if (!teacherResponse.ok) {
-            sendResponse({ 
-                success: false, 
-                error: `Authentication failed: ${teacherResponse.status} ${teacherResponse.statusText}` 
-            });
+
+        // Auto-detect the logged-in teacher via the website session
+        const tokenResult = await getExtensionToken();
+
+        if (!tokenResult.success || !tokenResult.user) {
+            console.error('❌ Not authenticated:', tokenResult.error);
+            sendResponse({ success: false, error: tokenResult.error || 'Not authenticated - please log in at classlogger.com' });
             return;
         }
 
-        const teacherData = await teacherResponse.json();
-        console.log('👨‍🏫 Teacher data received:', teacherData);
-        
-        if (!teacherData.success || !teacherData.teacher) {
-            console.error('❌ Authentication failed:', teacherData);
-            sendResponse({ success: false, error: 'Authentication failed: ' + (teacherData.error || 'Unknown error') });
-            return;
-        }
-        
-        const requestBody = { 
+        const requestBody = {
             meetUrl: meetUrl,
-            teacherId: teacherData.teacher.id 
+            teacherId: tokenResult.user.id
         };
         
         console.log('📤 Sending request to check-meet-url with:', requestBody);
@@ -279,31 +389,26 @@ async function handleCheckMeetUrl(meetUrl, sendResponse) {
 async function handleStartClass(classData, sendResponse) {
     try {
         console.log('🚀 Starting class with data:', classData);
-        
-        const result = await chrome.storage.local.get(['classlogger_token']);
-        const token = result.classlogger_token;
-        
+
+        // Get a fresh token from the website session (Bearer auth required)
+        const token = await getValidToken();
+
         console.log('🎫 Token for start class:', token ? token.substring(0, 20) + '...' : 'NO TOKEN');
-        
+
         if (!token) {
             console.error('❌ No token found for start class');
-            sendResponse({ success: false, error: 'Not authenticated' });
+            sendResponse({ success: false, error: 'Not authenticated - please log in at classlogger.com' });
             return;
         }
-        
-        // Add token to the request data
-        const requestData = {
-            ...classData,
-            token: token
-        };
-        
+
         console.log('📤 Sending start class request to /api/extension/start-class...');
         const startResponse = await fetch(`${API_BASE_URL}/api/extension/start-class`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`
             },
-            body: JSON.stringify(requestData)
+            body: JSON.stringify(classData)
         });
         
         console.log('📥 Start class response status:', startResponse.status);
@@ -333,31 +438,26 @@ async function handleStartClass(classData, sendResponse) {
 async function handleEndClass(classData, sendResponse) {
     try {
         console.log('🛑 Ending class with data:', classData);
-        
-        const result = await chrome.storage.local.get(['classlogger_token']);
-        const token = result.classlogger_token;
-        
+
+        // Get a fresh token from the website session (Bearer auth required)
+        const token = await getValidToken();
+
         console.log('🎫 Token for end class:', token ? token.substring(0, 20) + '...' : 'NO TOKEN');
-        
+
         if (!token) {
             console.error('❌ No token found for end class');
-            sendResponse({ success: false, error: 'Not authenticated' });
+            sendResponse({ success: false, error: 'Not authenticated - please log in at classlogger.com' });
             return;
         }
-        
-        // Add token to the request data
-        const requestData = {
-            ...classData,
-            token: token
-        };
-        
+
         console.log('📤 Sending end class request to /api/extension/end-class...');
         const endResponse = await fetch(`${API_BASE_URL}/api/extension/end-class`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`
             },
-            body: JSON.stringify(requestData)
+            body: JSON.stringify(classData)
         });
         
         console.log('📥 End class response status:', endResponse.status);
@@ -406,10 +506,11 @@ async function handleTakeScreenshot(sendResponse) {
             return;
         }
         
-        // Capture the visible tab
+        // Capture the visible tab as JPEG — far smaller than PNG, avoids
+        // "Request Entity Too Large" (413) when POSTing the base64 body.
         chrome.tabs.captureVisibleTab(activeTab.windowId, {
-            format: 'png',
-            quality: 90
+            format: 'jpeg',
+            quality: 75
         }, (dataUrl) => {
             if (chrome.runtime.lastError) {
                 console.error('❌ Screenshot capture failed:', chrome.runtime.lastError);
